@@ -6,8 +6,9 @@ DevSecOps AI — GitHub Actions PR Review Script
   1. Bandit SAST taraması (PR'da değişen .py dosyaları)
   2. CWE / OWASP Top 10 zenginleştirme
   3. LLM false positive filtresi (Groq, Llama-3.3-70b)
-  4. AI düzeltme önerileri — HIGH/CRITICAL bulgulara somut fix
+  4. AI düzeltme önerileri — tüm bulgulara somut fix
   5. Baseline karşılaştırma — kaç yeni sorun eklendi / kaçı düzeltildi
+  6. SCA bağımlılık taraması — requirements.txt / package.json → OSV.dev
 """
 import base64
 import json
@@ -366,6 +367,8 @@ def build_comment(
     fp_list: list[dict],
     files_scanned: int,
     diff: dict,
+    sca_findings: list[dict] = None,
+    packages_checked: int = 0,
 ) -> str:
     total = len(findings)
     high  = sum(1 for f in findings if f.get("severity") in ("HIGH", "CRITICAL"))
@@ -473,12 +476,191 @@ def build_comment(
             )
         lines.append("")
 
+    # ── SCA bağımlılık bulguları ──
+    if sca_findings is not None:
+        sca_high = sum(1 for f in sca_findings if f.get("severity") in ("CRITICAL", "HIGH"))
+        sca_title = (
+            f"### 📦 Bağımlılık Güvenliği — SCA "
+            f"({packages_checked} paket · {len(sca_findings)} CVE)"
+        )
+        lines += ["", sca_title, ""]
+
+        if not sca_findings:
+            lines.append("✅ Bilinen CVE bulunamadı.")
+        else:
+            if sca_high:
+                lines += [
+                    "> [!WARNING]",
+                    f"> **{sca_high} kritik/yüksek CVE** tespit edildi. "
+                    "Paketleri güncellemeden merge etmeyin.",
+                    "",
+                ]
+            for f in sca_findings:
+                icon    = _ICON.get(f.get("severity", ""), "⚪")
+                sev     = f.get("severity", "")
+                pkg     = f.get("package", "")
+                ver     = f.get("version", "")
+                vuln_id = f.get("vuln_id", "")
+                summary = f.get("summary", "")
+                fixed   = f.get("fixed_in", "bilinmiyor")
+                cvss    = f.get("cvss_score")
+
+                meta = f"`{pkg}@{ver}`"
+                if vuln_id: meta += f" · `{vuln_id}`"
+                if cvss:    meta += f" · CVSS {cvss}"
+                fix_line = f"→ `{fixed}` sürümüne güncelleyin" if fixed != "bilinmiyor" else ""
+
+                lines += [
+                    f"{icon} **{sev}** — {summary}",
+                    f"  {meta}" + (f" · {fix_line}" if fix_line else ""),
+                    "",
+                ]
+
     lines += [
         "---",
         "_Bu analiz [DevSecOps AI](https://github.com/efsanees/devsecops) "
         "tarafından otomatik olarak yapılmıştır._",
     ]
     return "\n".join(lines)
+
+# ── 6. SCA: Bağımlılık Güvenlik Taraması ─────────────────────────────────────
+
+_SEVERITY_FROM_CVSS = {
+    lambda s: s >= 9.0: "CRITICAL",
+    lambda s: s >= 7.0: "HIGH",
+    lambda s: s >= 4.0: "MEDIUM",
+}
+
+def _cvss_to_severity(score: float) -> str:
+    if score >= 9.0: return "CRITICAL"
+    if score >= 7.0: return "HIGH"
+    if score >= 4.0: return "MEDIUM"
+    return "LOW"
+
+
+def _parse_requirements(content: str) -> list[dict]:
+    """requirements.txt → [{name, version}, ...]"""
+    import re
+    packages = []
+    for line in content.splitlines():
+        line = line.strip()
+        if not line or line.startswith(("#", "-", "git+", "http")):
+            continue
+        m = re.match(r"^([A-Za-z0-9_.\-]+(?:\[[^\]]+\])?)\s*(?:[><=!~]+\s*([^\s,;]+))?", line)
+        if m:
+            packages.append({
+                "name":    m.group(1).strip(),
+                "version": (m.group(2) or "").strip().lstrip("="),
+            })
+    return packages
+
+
+def _parse_package_json(content: str) -> list[dict]:
+    """package.json → [{name, version}, ...]"""
+    import re
+    packages = []
+    try:
+        pkg = json.loads(content)
+        all_deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
+        for name, ver in all_deps.items():
+            packages.append({
+                "name":    name,
+                "version": re.sub(r"[^0-9.]", "", str(ver)).strip("."),
+            })
+    except Exception:
+        pass
+    return packages
+
+
+def _query_osv(packages: list[dict], ecosystem: str) -> list[dict]:
+    """OSV.dev Batch API — birden fazla paketi tek istekte sorgular."""
+    if not packages:
+        return []
+
+    queries = [
+        {
+            "package": {"name": p["name"], "ecosystem": ecosystem},
+            **({"version": p["version"]} if p.get("version") else {}),
+        }
+        for p in packages
+    ]
+
+    try:
+        resp = requests.post(
+            "https://api.osv.dev/v1/querybatch",
+            json={"queries": queries},
+            timeout=20,
+        )
+        resp.raise_for_status()
+        results = resp.json().get("results", [])
+    except Exception as e:
+        print(f"OSV.dev hatası ({ecosystem}): {e}")
+        return []
+
+    findings = []
+    for pkg, result in zip(packages, results):
+        for vuln in result.get("vulns", []):
+            severity = "MEDIUM"
+            cvss_score = None
+            for sev in vuln.get("severity", []):
+                if sev.get("type") in ("CVSS_V3", "CVSS_V2"):
+                    try:
+                        cvss_score = float(sev.get("score", 0))
+                        severity = _cvss_to_severity(cvss_score)
+                    except (TypeError, ValueError):
+                        pass
+                    break
+
+            fixed_in = "bilinmiyor"
+            for affected in vuln.get("affected", []):
+                for rng in affected.get("ranges", []):
+                    for event in rng.get("events", []):
+                        if "fixed" in event:
+                            fixed_in = event["fixed"]
+
+            findings.append({
+                "type":      "SCA",
+                "package":   pkg["name"],
+                "version":   pkg.get("version") or "?",
+                "ecosystem": ecosystem,
+                "vuln_id":   vuln.get("id", "?"),
+                "severity":  severity,
+                "cvss_score": cvss_score,
+                "summary":   (vuln.get("summary") or "Açıklama yok")[:120],
+                "fixed_in":  fixed_in,
+            })
+    return findings
+
+
+_DEP_FILES = {
+    "requirements.txt": ("PyPI",   _parse_requirements),
+    "package.json":     ("npm",    _parse_package_json),
+}
+
+def run_sca(all_filenames: list[str]) -> tuple[list[dict], int]:
+    """
+    PR'da bulunan bağımlılık dosyalarını okur, OSV.dev ile CVE tarar.
+    Döner: (findings, packages_checked)
+    """
+    findings: list[dict] = []
+    packages_checked = 0
+
+    for fname, (ecosystem, parser) in _DEP_FILES.items():
+        if fname not in all_filenames:
+            continue
+        content = get_file_content(fname, HEAD_SHA)
+        if not content:
+            continue
+        packages = parser(content)
+        packages_checked += len(packages)
+        found = _query_osv(packages, ecosystem)
+        findings.extend(found)
+        print(f"SCA [{ecosystem}]: {len(packages)} paket → {len(found)} CVE")
+
+    sev_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+    findings.sort(key=lambda f: sev_order.get(f.get("severity", ""), 4))
+    return findings, packages_checked
+
 
 # ── Ana akış ─────────────────────────────────────────────────────────────────
 
@@ -534,8 +716,12 @@ def main():
     # 3. Baseline karşılaştırma
     diff = compute_baseline_diff(py_files, genuine)
 
+    # 4. SCA — bağımlılık taraması (tüm değişen dosyalar arasında dep dosyası var mı)
+    all_filenames = [f["filename"] for f in changed_files]
+    sca_findings, packages_checked = run_sca(all_filenames)
+
     # Yorum oluştur ve gönder
-    body = build_comment(genuine, fp_list, len(all_files), diff)
+    body = build_comment(genuine, fp_list, len(all_files), diff, sca_findings, packages_checked)
     ok = post_comment(body)
     print("Comment gonderildi." if ok else "Comment gonderilemedi!")
 
