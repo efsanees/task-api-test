@@ -504,16 +504,21 @@ def build_comment(
             shown = 0
             sev_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
             for pkg_name, pkg_findings in by_pkg.items():
-                # Paketteki en yüksek severity'li CVE'yi öne al
                 pkg_findings.sort(key=lambda x: sev_order.get(x.get("severity", ""), 4))
                 worst = pkg_findings[0]
                 icon    = _ICON.get(worst.get("severity", ""), "⚪")
                 sev     = worst.get("severity", "")
                 ver     = worst.get("version", "")
                 vuln_id = worst.get("vuln_id", "")
-                summary = worst.get("summary", "")
                 fixed   = worst.get("fixed_in", "bilinmiyor")
                 cvss    = worst.get("cvss_score")
+
+                # En anlamlı summary'yi tüm CVE'ler arasında bul
+                summary = next(
+                    (f["summary"] for f in pkg_findings
+                     if f.get("summary") and not f["summary"].startswith(("GHSA-", "CVE-", "PYSEC-"))),
+                    worst.get("summary", ""),
+                )
                 count   = len(pkg_findings)
 
                 meta = f"`{pkg_name}@{ver}`"
