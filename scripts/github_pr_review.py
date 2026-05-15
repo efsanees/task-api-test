@@ -668,6 +668,25 @@ def _query_osv(packages: list[dict], ecosystem: str) -> list[dict]:
     return findings
 
 
+def _fetch_vuln_summary(vuln_id: str) -> str:
+    """OSV.dev tekil endpoint'inden summary çeker (batch API'si döndürmüyor)."""
+    try:
+        r = requests.get(
+            f"https://api.osv.dev/v1/vulns/{vuln_id}",
+            timeout=8,
+        )
+        if r.status_code == 200:
+            data = r.json()
+            return (
+                data.get("summary")
+                or (data.get("details", "") or "")[:120]
+                or ""
+            )
+    except Exception:
+        pass
+    return ""
+
+
 _DEP_FILES = {
     "requirements.txt": ("PyPI",   _parse_requirements),
     "package.json":     ("npm",    _parse_package_json),
@@ -695,6 +714,19 @@ def run_sca(all_filenames: list[str]) -> tuple[list[dict], int]:
 
     sev_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
     findings.sort(key=lambda f: sev_order.get(f.get("severity", ""), 4))
+
+    # Batch API summary döndürmüyor — paket başına worst CVE için tekil endpoint çağır
+    by_pkg: dict[str, list] = {}
+    for f in findings:
+        by_pkg.setdefault(f["package"], []).append(f)
+
+    for pkg_findings in by_pkg.values():
+        worst = pkg_findings[0]
+        if not worst.get("summary") or worst["summary"].startswith(("GHSA-", "CVE-", "PYSEC-")):
+            fetched = _fetch_vuln_summary(worst["vuln_id"])
+            if fetched:
+                worst["summary"] = fetched
+
     return findings, packages_checked
 
 
