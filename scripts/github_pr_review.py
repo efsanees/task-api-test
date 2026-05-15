@@ -88,6 +88,67 @@ def run_bandit(tmp_dir: str) -> list[dict]:
         })
     return findings
 
+# ── Türkçe bulgu mesajları ────────────────────────────────────────────────────
+
+_BANDIT_TR = {
+    "B101": "assert ifadesi üretim kodunda güvenlik açığı oluşturabilir",
+    "B102": "exec() kullanımı kod enjeksiyonuna yol açabilir",
+    "B103": "Güvensiz dosya izinleri tespit edildi",
+    "B104": "0.0.0.0 adresine bağlama — tüm ağ arayüzleri açık",
+    "B105": "Hardcoded şifre tespit edildi",
+    "B106": "Fonksiyon argümanında hardcoded şifre",
+    "B107": "Varsayılan parametrede hardcoded şifre",
+    "B108": "Güvensiz geçici dosya kullanımı",
+    "B201": "Flask debug=True ile çalışıyor — üretimde kapatılmalı",
+    "B301": "pickle modülü güvensiz veri deserializasyonuna yol açabilir",
+    "B302": "marshal modülü güvensiz veri deserializasyonuna yol açabilir",
+    "B303": "MD5/SHA1 kriptografik olarak güvensiz hash algoritması",
+    "B304": "Zayıf şifreleme algoritması kullanımı",
+    "B305": "Güvensiz şifreleme modu kullanımı",
+    "B306": "mktemp() yarış koşulu açığı oluşturabilir",
+    "B307": "eval() kullanımı kod enjeksiyonuna yol açabilir",
+    "B308": "mark_safe() XSS açığına yol açabilir",
+    "B310": "urllib ile URL açma — SSRF riski",
+    "B311": "random modülü kriptografik amaçlı kullanılamaz",
+    "B312": "telnetlib şifresiz protokol — güvensiz",
+    "B314": "xml.etree XML injection açığına karşı savunmasız",
+    "B318": "xml.dom XML injection açığına karşı savunmasız",
+    "B320": "lxml XML injection açığına karşı savunmasız",
+    "B321": "FTP şifresiz protokol — güvensiz",
+    "B323": "SSL sertifikası doğrulanmıyor",
+    "B324": "MD5/SHA1 zayıf hash algoritması kullanımı",
+    "B401": "telnetlib modülü import edildi — şifresiz protokol",
+    "B402": "ftplib modülü import edildi — şifresiz protokol",
+    "B403": "pickle modülü import edildi — güvensiz deserializasyon riski",
+    "B404": "subprocess modülü kullanılıyor — güvenli kullanım gerekli",
+    "B405": "xml.etree modülü import edildi — XML injection riski",
+    "B501": "SSL sertifika doğrulaması devre dışı",
+    "B502": "Eski SSL/TLS protokol sürümü kullanılıyor",
+    "B503": "Zayıf SSL cipher suite kullanımı",
+    "B504": "Güvensiz SSL protokol sürümü",
+    "B505": "Zayıf kriptografik anahtar boyutu",
+    "B506": "yaml.load() güvensiz — arbitrary kod çalıştırabilir",
+    "B601": "Paramiko shell komutu enjeksiyona açık",
+    "B602": "shell=True ile subprocess — komut enjeksiyonu riski",
+    "B603": "subprocess çağrısı — shell argümanları doğrulanmalı",
+    "B604": "Shell fonksiyon çağrısı — enjeksiyon riski",
+    "B605": "Shell ile process başlatma — enjeksiyon tespit edildi",
+    "B606": "os.popen() kullanımı — komut enjeksiyonu riski",
+    "B607": "Kısmi yürütülebilir dosya yolu — PATH hijacking riski",
+    "B608": "String birleştirme ile SQL sorgusu — SQL injection riski",
+    "B609": "Wildcard ile shell komutu — enjeksiyon riski",
+    "B610": "Django extra() SQL injection içerebilir",
+    "B611": "Django RawSQL() doğrudan SQL enjeksiyonu riski",
+    "B701": "Jinja2 autoescape kapalı — XSS riski",
+    "B702": "Mako template kullanımı — XSS riski",
+    "B703": "Django mark_safe() XSS açığına yol açabilir",
+}
+
+def tr_message(finding: dict) -> str:
+    """Bandit İngilizce mesajını Türkçe karşılığıyla değiştirir, yoksa orijinali döner."""
+    rule = finding.get("rule_id", "").upper()
+    return _BANDIT_TR.get(rule, finding.get("message", ""))
+
 # ── CWE / OWASP haritalaması ──────────────────────────────────────────────────
 
 _BANDIT_CWE = {
@@ -378,7 +439,7 @@ def build_comment(
             if owasp: meta += f" · `{owasp}`"
 
             lines += [
-                f"{icon} **{f.get('severity','')}** — {f.get('message','')}",
+                f"{icon} **{f.get('severity','')}** — {tr_message(f)}",
                 f"  {meta}",
             ]
 
@@ -396,7 +457,7 @@ def build_comment(
             icon = _ICON.get(f.get("severity", ""), "⚪")
             lines.append(
                 f"- {icon} `{f.get('file','')}:{f.get('line','')}` — "
-                f"{f.get('message','')[:80]}"
+                f"{tr_message(f)[:80]}"
             )
         if len(diff["added"]) > 5:
             lines.append(f"- _...ve {len(diff['added']) - 5} tane daha_")
@@ -407,7 +468,7 @@ def build_comment(
         lines += ["### ✅ Bu PR ile Düzeltilen Sorunlar", ""]
         for f in diff["fixed"][:5]:
             lines.append(
-                f"- ~~`{f.get('file','')}` — {f.get('message','')[:60]}~~"
+                f"- ~~`{f.get('file','')}` — {tr_message(f)[:60]}~~"
             )
         lines.append("")
 
