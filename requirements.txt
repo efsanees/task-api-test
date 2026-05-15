@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+requests==2.18.0
+pyyaml==5.1
+cryptography==2.3
+Pillow==9.0.0
