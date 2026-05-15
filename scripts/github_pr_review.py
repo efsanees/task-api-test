@@ -513,25 +513,31 @@ def build_comment(
                 fixed   = worst.get("fixed_in", "bilinmiyor")
                 cvss    = worst.get("cvss_score")
 
-                # En anlamlı summary'yi tüm CVE'ler arasında bul
-                summary = next(
-                    (f["summary"] for f in pkg_findings
-                     if f.get("summary") and not f["summary"].startswith(("GHSA-", "CVE-", "PYSEC-"))),
-                    worst.get("summary", ""),
+                count = len(pkg_findings)
+
+                # Türkçe açıklama öncelikli, yoksa İngilizce fallback
+                summary = (
+                    worst.get("summary_tr")
+                    or next(
+                        (f["summary"] for f in pkg_findings
+                         if f.get("summary") and not f["summary"].startswith(("GHSA-", "CVE-", "PYSEC-"))),
+                        worst.get("summary", ""),
+                    )
                 )
-                count   = len(pkg_findings)
+                fix_suggestion = worst.get("fix_suggestion", "")
 
                 meta = f"`{pkg_name}@{ver}`"
                 if count > 1: meta += f" · **{count} CVE**"
                 if vuln_id:   meta += f" · `{vuln_id}`"
                 if cvss:      meta += f" · CVSS {cvss}"
-                fix_line = f"→ `{fixed}` sürümüne güncelleyin" if fixed != "bilinmiyor" else ""
 
                 lines += [
                     f"{icon} **{sev}** — {summary}",
-                    f"  {meta}" + (f" · {fix_line}" if fix_line else ""),
-                    "",
+                    f"  {meta}",
                 ]
+                if fix_suggestion:
+                    lines.append(f"  > 💡 **Düzeltme:** `{fix_suggestion}`")
+                lines.append("")
                 shown += 1
                 if shown >= 15:
                     remaining = len(by_pkg) - shown
@@ -727,7 +733,86 @@ def run_sca(all_filenames: list[str]) -> tuple[list[dict], int]:
             if fetched:
                 worst["summary"] = fetched
 
+    # Türkçe açıklama + güncelleme önerisi (tek Groq çağrısı)
+    _add_sca_turkish(by_pkg)
+
     return findings, packages_checked
+
+
+def _add_sca_turkish(by_pkg: dict) -> None:
+    """
+    Her paketin worst CVE'sine Türkçe açıklama ve fix_suggestion ekler.
+    Tek Groq çağrısı kullanır.
+    """
+    if not GROQ_API_KEY:
+        return
+
+    items = []
+    for pkg_name, pkg_findings in by_pkg.items():
+        worst = pkg_findings[0]
+        items.append({
+            "index":   len(items),
+            "pkg":     pkg_name,
+            "version": worst.get("version", "?"),
+            "vuln_id": worst.get("vuln_id", ""),
+            "summary": worst.get("summary", ""),
+            "fixed_in": worst.get("fixed_in", "bilinmiyor"),
+            "cve_count": len(pkg_findings),
+        })
+
+    if not items:
+        return
+
+    pkg_list = "\n".join(
+        f"[{it['index']}] {it['pkg']}@{it['version']} | {it['cve_count']} CVE | "
+        f"düzeltme sürümü: {it['fixed_in']} | açıklama: {it['summary'][:100]}"
+        for it in items
+    )
+
+    prompt = (
+        "Aşağıdaki Python bağımlılık güvenlik açıkları için:\n"
+        "1. Türkçe kısa açıklama (max 1 cümle, teknik)\n"
+        "2. Türkçe güncelleme önerisi (hangi sürüme geçmeli, nasıl)\n\n"
+        f"Paketler:\n{pkg_list}\n\n"
+        "Yanıt formatı — yalnızca JSON array:\n"
+        '[{"index":0,"description":"Türkçe açıklama...","fix":"pip install paket==X.Y.Z"}]\n'
+        "Kurallar:\n"
+        "- Türkçe karakter kullan: ş, ç, ö, ü, ğ, ı\n"
+        "- description: güvenlik riskini 1 cümlede açıkla\n"
+        "- fix: 'pip install paket==SÜRÜM' formatında somut komut ver, "
+        "düzeltme sürümü bilinmiyorsa 'pip install paket --upgrade' yaz\n"
+        "- Sadece JSON array döndür"
+    )
+
+    try:
+        from groq import Groq
+        client = Groq(api_key=GROQ_API_KEY)
+        resp = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=600,
+            temperature=0.1,
+        )
+        raw   = resp.choices[0].message.content.strip()
+        start = raw.find("[")
+        end   = raw.rfind("]") + 1
+        results = json.loads(raw[start:end]) if start >= 0 and end > 0 else []
+    except Exception as e:
+        print(f"SCA Türkçe çeviri hatası: {e}")
+        return
+
+    for r in results:
+        idx = r.get("index")
+        if idx is None or idx >= len(items):
+            continue
+        pkg_name = items[idx]["pkg"]
+        worst = by_pkg[pkg_name][0]
+        if r.get("description"):
+            worst["summary_tr"] = r["description"]
+        if r.get("fix"):
+            worst["fix_suggestion"] = r["fix"]
+
+    print(f"SCA Türkçe: {len(results)} paket işlendi")
 
 
 # ── Ana akış ─────────────────────────────────────────────────────────────────
