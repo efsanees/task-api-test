@@ -268,17 +268,18 @@ def add_fix_suggestions(findings: list[dict], language: str = "Python") -> None:
 
     prompt = (
         f"Sen bir kıdemli {language} güvenlik mühendisisin.\n"
-        "Asagidaki SAST bulgularinin her biri icin kisa, teknik ve uygulanabilir "
-        "Turkce duzeltme onerisi ver.\n\n"
+        "Aşağıdaki SAST bulgularının her biri için kısa, teknik ve uygulanabilir "
+        "Türkçe düzeltme önerisi yaz.\n\n"
         f"Bulgular:\n{summaries}\n\n"
-        "Yanit formati — yalnizca JSON array, baska hicbir sey yazma:\n"
-        '[{"index":0,"fix":"...somut tek-cumle duzeltme adimi..."}]\n\n'
+        "Yanıt formatı — yalnızca JSON array, başka hiçbir şey yazma:\n"
+        '[{"index":0,"fix":"...somut tek-cümle düzeltme adımı..."}]\n\n'
         "Kurallar:\n"
-        "- Her fix en fazla 2 kisa cumle\n"
-        "- Somut ol: fonksiyon adi, parametre, surumu belirt\n"
-        '- Ornek: "subprocess.run() cagrisinda shell=False kullanin, komutlari liste olarak geciriniz: '
-        'subprocess.run([\'cmd\', arg1])"\n'
-        "- Sadece JSON array dondur"
+        "- Türkçe karakter kullan: ş, ç, ö, ü, ğ, ı, İ harflerini doğru yaz\n"
+        "- Her fix en fazla 2 kısa cümle\n"
+        "- Somut ol: fonksiyon adı, parametre, sürüm numarası belirt\n"
+        '- Örnek: "subprocess.run() çağrısında shell=False kullanın, '
+        "komutları liste olarak geçirin: subprocess.run(['cmd', arg1])\"\n"
+        "- Sadece JSON array döndür, açıklama ekleme"
     )
 
     try:
