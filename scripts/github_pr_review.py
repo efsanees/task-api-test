@@ -495,19 +495,31 @@ def build_comment(
                     "Paketleri güncellemeden merge etmeyin.",
                     "",
                 ]
-            for f in sca_findings:
-                icon    = _ICON.get(f.get("severity", ""), "⚪")
-                sev     = f.get("severity", "")
-                pkg     = f.get("package", "")
-                ver     = f.get("version", "")
-                vuln_id = f.get("vuln_id", "")
-                summary = f.get("summary", "")
-                fixed   = f.get("fixed_in", "bilinmiyor")
-                cvss    = f.get("cvss_score")
 
-                meta = f"`{pkg}@{ver}`"
-                if vuln_id: meta += f" · `{vuln_id}`"
-                if cvss:    meta += f" · CVSS {cvss}"
+            # Paket bazında grupla — her paketten en kötü CVE'yi öne çıkar
+            by_pkg: dict[str, list] = {}
+            for f in sca_findings:
+                by_pkg.setdefault(f["package"], []).append(f)
+
+            shown = 0
+            sev_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+            for pkg_name, pkg_findings in by_pkg.items():
+                # Paketteki en yüksek severity'li CVE'yi öne al
+                pkg_findings.sort(key=lambda x: sev_order.get(x.get("severity", ""), 4))
+                worst = pkg_findings[0]
+                icon    = _ICON.get(worst.get("severity", ""), "⚪")
+                sev     = worst.get("severity", "")
+                ver     = worst.get("version", "")
+                vuln_id = worst.get("vuln_id", "")
+                summary = worst.get("summary", "")
+                fixed   = worst.get("fixed_in", "bilinmiyor")
+                cvss    = worst.get("cvss_score")
+                count   = len(pkg_findings)
+
+                meta = f"`{pkg_name}@{ver}`"
+                if count > 1: meta += f" · **{count} CVE**"
+                if vuln_id:   meta += f" · `{vuln_id}`"
+                if cvss:      meta += f" · CVSS {cvss}"
                 fix_line = f"→ `{fixed}` sürümüne güncelleyin" if fixed != "bilinmiyor" else ""
 
                 lines += [
@@ -515,6 +527,12 @@ def build_comment(
                     f"  {meta}" + (f" · {fix_line}" if fix_line else ""),
                     "",
                 ]
+                shown += 1
+                if shown >= 15:
+                    remaining = len(by_pkg) - shown
+                    if remaining > 0:
+                        lines.append(f"_...ve {remaining} paket daha_\n")
+                    break
 
     lines += [
         "---",
@@ -573,17 +591,23 @@ def _parse_package_json(content: str) -> list[dict]:
 
 
 def _query_osv(packages: list[dict], ecosystem: str) -> list[dict]:
-    """OSV.dev Batch API — birden fazla paketi tek istekte sorgular."""
-    if not packages:
+    """
+    OSV.dev Batch API — birden fazla paketi tek istekte sorgular.
+    Versiyonsuz paketleri atlar (sürüm bilinmeden sorgu anlamsız).
+    """
+    # Versiyonsuz paketleri atla — wildcard sonuç gürültü yaratır
+    versioned = [p for p in packages if p.get("version")]
+    if not versioned:
         return []
 
     queries = [
         {
             "package": {"name": p["name"], "ecosystem": ecosystem},
-            **({"version": p["version"]} if p.get("version") else {}),
+            "version": p["version"],
         }
-        for p in packages
+        for p in versioned
     ]
+    packages = versioned  # zip için hizala
 
     try:
         resp = requests.post(
@@ -618,16 +642,23 @@ def _query_osv(packages: list[dict], ecosystem: str) -> list[dict]:
                         if "fixed" in event:
                             fixed_in = event["fixed"]
 
+            # summary → details → aliases → fallback sırasıyla dene
+            summary = (
+                vuln.get("summary")
+                or vuln.get("details", "")[:120]
+                or next(iter(vuln.get("aliases", [])), vuln.get("id", ""))
+            )
+
             findings.append({
-                "type":      "SCA",
-                "package":   pkg["name"],
-                "version":   pkg.get("version") or "?",
-                "ecosystem": ecosystem,
-                "vuln_id":   vuln.get("id", "?"),
-                "severity":  severity,
+                "type":       "SCA",
+                "package":    pkg["name"],
+                "version":    pkg.get("version") or "?",
+                "ecosystem":  ecosystem,
+                "vuln_id":    vuln.get("id", "?"),
+                "severity":   severity,
                 "cvss_score": cvss_score,
-                "summary":   (vuln.get("summary") or "Açıklama yok")[:120],
-                "fixed_in":  fixed_in,
+                "summary":    (summary or "Açıklama yok")[:120],
+                "fixed_in":   fixed_in,
             })
     return findings
 
