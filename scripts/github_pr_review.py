@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 """
 DevSecOps AI — GitHub Actions PR Review Script
-Gereksinimler: pip install bandit groq requests
+
+Özellikler:
+  1. Bandit SAST taraması (PR'da değişen .py dosyaları)
+  2. CWE / OWASP Top 10 zenginleştirme
+  3. LLM false positive filtresi (Groq, Llama-3.3-70b)
+  4. AI düzeltme önerileri — HIGH/CRITICAL bulgulara somut fix
+  5. Baseline karşılaştırma — kaç yeni sorun eklendi / kaçı düzeltildi
 """
 import base64
 import json
 import os
 import subprocess
-import sys
 import tempfile
 
 import requests
@@ -26,7 +31,7 @@ HEADERS = {
     "X-GitHub-Api-Version": "2022-11-28",
 }
 
-# ── GitHub API ─────────────────────────────────────────────────────────────────
+# ── GitHub API ────────────────────────────────────────────────────────────────
 
 def get_changed_files():
     url = f"{GH_API}/repos/{REPO}/pulls/{PR_NUMBER}/files"
@@ -47,9 +52,9 @@ def post_comment(body):
     resp = requests.post(url, headers=HEADERS, json={"body": body}, timeout=15)
     return resp.status_code == 201
 
-# ── SAST: Bandit ───────────────────────────────────────────────────────────────
+# ── SAST: Bandit ──────────────────────────────────────────────────────────────
 
-def run_bandit(tmp_dir):
+def run_bandit(tmp_dir: str) -> list[dict]:
     try:
         proc = subprocess.run(
             ["bandit", "-r", tmp_dir, "-f", "json", "-q", "--exit-zero"],
@@ -88,45 +93,54 @@ def run_bandit(tmp_dir):
 _BANDIT_CWE = {
     "B105": "CWE-259", "B106": "CWE-259", "B107": "CWE-259",
     "B201": "CWE-94",  "B301": "CWE-502", "B302": "CWE-502",
-    "B303": "CWE-327", "B307": "CWE-78",  "B501": "CWE-295",
+    "B303": "CWE-327", "B307": "CWE-78",  "B324": "CWE-327",
+    "B404": "CWE-78",  "B501": "CWE-295",
     "B502": "CWE-326", "B601": "CWE-78",  "B602": "CWE-78",
     "B603": "CWE-78",  "B605": "CWE-78",  "B608": "CWE-89",
 }
 _CWE_OWASP = {
-    "CWE-78": "A03:2021", "CWE-79": "A03:2021", "CWE-89": "A03:2021",
-    "CWE-94": "A03:2021", "CWE-259": "A07:2021", "CWE-295": "A02:2021",
+    "CWE-78":  "A03:2021", "CWE-79": "A03:2021", "CWE-89": "A03:2021",
+    "CWE-94":  "A03:2021", "CWE-259": "A07:2021", "CWE-295": "A02:2021",
     "CWE-326": "A02:2021", "CWE-327": "A02:2021", "CWE-502": "A08:2021",
 }
 
-def enrich(finding):
+def enrich(finding: dict) -> dict:
     rule = finding.get("rule_id", "").upper()
-    cwe = _BANDIT_CWE.get(rule)
-    finding["cwe_id"] = cwe
+    cwe  = _BANDIT_CWE.get(rule)
+    finding["cwe_id"]        = cwe
     finding["owasp_category"] = _CWE_OWASP.get(cwe) if cwe else None
     return finding
 
-# ── LLM False Positive Filtresi ───────────────────────────────────────────────
+# ── 1. LLM False Positive Filtresi ───────────────────────────────────────────
 
-def fp_filter(findings):
+def fp_filter(findings: list[dict]) -> tuple[list[dict], list[dict]]:
+    """
+    HIGH/CRITICAL bulguları LLM'e gönderir.
+    Gerçek sorun olmayanları (is_fp=True, confidence>=0.65) filtreler.
+    Döner: (genuine_findings, fp_list)
+    """
     if not GROQ_API_KEY:
         return findings, []
 
-    candidates = [(i, f) for i, f in enumerate(findings)
-                  if f.get("severity") in ("HIGH", "CRITICAL")][:10]
+    candidates = [
+        (i, f) for i, f in enumerate(findings)
+        if f.get("severity") in ("HIGH", "CRITICAL")
+    ][:10]
     if not candidates:
         return findings, []
 
     summaries = "\n".join(
-        f"[{idx}] {f['rule_id']} | {f['file']}:{f['line']} | {f['message'][:100]}"
+        f"[{idx}] {f['rule_id']} | {f['file']}:{f['line']} | {f['message'][:120]}"
         for idx, (_, f) in enumerate(candidates)
     )
 
     prompt = (
-        "SAST bulgularinin false positive mi gercek sorun mu oldugunu degerlendir.\n"
+        "Asagidaki Python SAST bulgularinin false positive mi yoksa gercek guvenlik sorunu mu "
+        "oldugunu belirle. Proje bir web API.\n\n"
         f"Bulgular:\n{summaries}\n\n"
-        "JSON array don: "
-        '[{"index":0,"is_fp":false,"confidence":0.90,"reason":"..."}]\n'
-        "Sadece JSON array."
+        "Her bulgu icin karar ver. JSON array don:\n"
+        '[{"index":0,"is_fp":false,"confidence":0.90,"reason":"Gercek shell injection riski"}]\n'
+        "Yalnizca JSON array, baska hicbir sey yazma."
     )
 
     try:
@@ -135,11 +149,12 @@ def fp_filter(findings):
         resp = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=400,
+            max_tokens=500,
             temperature=0.1,
         )
-        raw = resp.choices[0].message.content.strip()
-        start, end = raw.find("["), raw.rfind("]") + 1
+        raw   = resp.choices[0].message.content.strip()
+        start = raw.find("[")
+        end   = raw.rfind("]") + 1
         decisions = json.loads(raw[start:end]) if start >= 0 and end > 0 else []
     except Exception as e:
         print(f"FP filter hatasi: {e}")
@@ -150,75 +165,253 @@ def fp_filter(findings):
         local_idx = d.get("index")
         if local_idx is not None and d.get("is_fp") and d.get("confidence", 0) >= 0.65:
             fp_local.add(local_idx)
+            # reason'ı orijinal bulguya ekle (comment'te göstermek için)
+            if local_idx < len(candidates):
+                candidates[local_idx][1]["fp_reason"] = d.get("reason", "")
 
     fp_global = {candidates[i][0] for i in fp_local if i < len(candidates)}
-    fp_list   = [findings[g] for g in fp_global]
+    fp_list   = [findings[g] for g in sorted(fp_global)]
     genuine   = [f for i, f in enumerate(findings) if i not in fp_global]
     return genuine, fp_list
 
-# ── Markdown yorum oluştur ───────────────────────────────────────────────────
+# ── 2. AI Düzeltme Önerileri (Remediation) ───────────────────────────────────
+
+def add_fix_suggestions(findings: list[dict], language: str = "Python") -> None:
+    """
+    HIGH/CRITICAL bulgulara in-place olarak fix_suggestion alanı ekler.
+    Tek bir Groq çağrısı ile max 10 bulgu için öneri üretir.
+    """
+    if not GROQ_API_KEY:
+        return
+
+    candidates = [
+        (i, f) for i, f in enumerate(findings)
+        if f.get("severity") in ("HIGH", "CRITICAL")
+    ][:10]
+    if not candidates:
+        return
+
+    def _summarize(idx: int, f: dict) -> str:
+        cwe  = f.get("cwe_id", "?")
+        owasp = f.get("owasp_category", "?")
+        return (
+            f"[{idx}] {f.get('rule_id','')} | {f.get('severity','')} | "
+            f"{f.get('file','')}:{f.get('line','')} | "
+            f"{f.get('message','')[:120]} | CWE: {cwe} | OWASP: {owasp}"
+        )
+
+    summaries = "\n".join(_summarize(i, f) for i, (_, f) in enumerate(candidates))
+
+    prompt = (
+        f"Sen bir kıdemli {language} güvenlik mühendisisin.\n"
+        "Asagidaki SAST bulgularinin her biri icin kisa, teknik ve uygulanabilir "
+        "Turkce duzeltme onerisi ver.\n\n"
+        f"Bulgular:\n{summaries}\n\n"
+        "Yanit formati — yalnizca JSON array, baska hicbir sey yazma:\n"
+        '[{"index":0,"fix":"...somut tek-cumle duzeltme adimi..."}]\n\n'
+        "Kurallar:\n"
+        "- Her fix en fazla 2 kisa cumle\n"
+        "- Somut ol: fonksiyon adi, parametre, surumu belirt\n"
+        '- Ornek: "subprocess.run() cagrisinda shell=False kullanin, komutlari liste olarak geciriniz: '
+        'subprocess.run([\'cmd\', arg1])"\n'
+        "- Sadece JSON array dondur"
+    )
+
+    try:
+        from groq import Groq
+        client = Groq(api_key=GROQ_API_KEY)
+        resp = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=900,
+            temperature=0.1,
+        )
+        raw   = resp.choices[0].message.content.strip()
+        start = raw.find("[")
+        end   = raw.rfind("]") + 1
+        fixes = json.loads(raw[start:end]) if start >= 0 and end > 0 else []
+    except Exception as e:
+        print(f"Remediation hatasi: {e}")
+        return
+
+    applied = 0
+    for item in fixes:
+        local_idx = item.get("index")
+        fix = (item.get("fix") or "").strip()
+        if fix and local_idx is not None and local_idx < len(candidates):
+            candidates[local_idx][1]["fix_suggestion"] = fix
+            applied += 1
+
+    print(f"Remediation: {applied}/{len(candidates)} bulguya duzeltme onerisi eklendi")
+
+# ── 3. Baseline Karşılaştırma ─────────────────────────────────────────────────
+
+def _finding_key(f: dict) -> str:
+    """Bulguyu tanımlayan kararlı anahtar — line numarası dahil değil (PR'da kayabilir)."""
+    return f"{f.get('rule_id','')}::{f.get('file','')}::{f.get('message','')[:60]}"
+
+
+def compute_baseline_diff(
+    py_files: list[str],
+    head_findings: list[dict],
+) -> dict:
+    """
+    BASE_SHA'daki haliyle aynı dosyaları tarar, HEAD ile karşılaştırır.
+    Döner: {"added": [...], "fixed": [...], "unchanged_count": int}
+    """
+    if not BASE_SHA:
+        return {}
+
+    base_findings: list[dict] = []
+
+    with tempfile.TemporaryDirectory(prefix="pr_base_") as base_tmp:
+        downloaded = 0
+        for path in py_files:
+            content = get_file_content(path, BASE_SHA)
+            if not content:
+                continue
+            dest = os.path.join(base_tmp, path)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            with open(dest, "w", encoding="utf-8") as fh:
+                fh.write(content)
+            downloaded += 1
+
+        if downloaded:
+            raw_base = run_bandit(base_tmp)
+            base_findings = [enrich(f) for f in raw_base]
+
+    base_keys  = {_finding_key(f) for f in base_findings}
+    head_keys  = {_finding_key(f) for f in head_findings}
+
+    added   = [f for f in head_findings if _finding_key(f) not in base_keys]
+    fixed   = [f for f in base_findings if _finding_key(f) not in head_keys]
+    unchanged = len(base_keys & head_keys)
+
+    print(f"Baseline: {len(base_findings)} bulgu → HEAD: {len(head_findings)} bulgu "
+          f"(+{len(added)} yeni, -{len(fixed)} duzeltildi, ={unchanged} degismedi)")
+
+    return {"added": added, "fixed": fixed, "unchanged_count": unchanged}
+
+# ── Markdown yorum oluştur ────────────────────────────────────────────────────
 
 _ICON = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🟡", "LOW": "🔵"}
 
-def build_comment(findings, fp_list, files_scanned):
+def build_comment(
+    findings: list[dict],
+    fp_list: list[dict],
+    files_scanned: int,
+    diff: dict,
+) -> str:
     total = len(findings)
     high  = sum(1 for f in findings if f.get("severity") in ("HIGH", "CRITICAL"))
     med   = sum(1 for f in findings if f.get("severity") == "MEDIUM")
 
-    lines = [
-        "## 🔍 DevSecOps Code Review",
-        "",
-        f"{files_scanned} dosya tarandi · **{total}** sorun bulundu "
-        f"({high} kritik/yuksek · {med} orta)",
+    lines = ["## 🔍 DevSecOps Code Review", ""]
+
+    # ── Baseline karşılaştırma özeti ──
+    if diff:
+        added_count   = len(diff.get("added", []))
+        fixed_count   = len(diff.get("fixed", []))
+        unchanged_cnt = diff.get("unchanged_count", 0)
+        diff_parts = []
+        if added_count:
+            diff_parts.append(f"🆕 **{added_count} yeni**")
+        if fixed_count:
+            diff_parts.append(f"✅ **{fixed_count} düzeltildi**")
+        if unchanged_cnt:
+            diff_parts.append(f"📌 {unchanged_cnt} değişmedi")
+        lines += [
+            "> [!TIP]",
+            f"> **Baseline karşılaştırma:** {' · '.join(diff_parts) if diff_parts else 'Değişiklik yok'}",
+            "",
+        ]
+
+    lines += [
+        f"{files_scanned} dosya tarandı · **{total}** sorun bulundu "
+        f"({high} kritik/yüksek · {med} orta)",
         "",
     ]
 
+    # ── False Positive notu ──
     if fp_list:
+        fp_messages = []
+        for f in fp_list:
+            msg = f.get("message", f.get("rule_id", ""))[:80]
+            reason = f.get("fp_reason", "")
+            fp_messages.append(f"> - {msg}" + (f" *(_{reason}_)*" if reason else ""))
+
         lines += [
             "> [!NOTE]",
             f"> **LLM False Positive Analizi:** {total + len(fp_list)} SAST bulgusundan "
-            f"**{len(fp_list)}** tanesi false positive olarak filtrelendi (guven esigi: %65).",
-            "  ",
-            f">  - {chr(10).join('> - ' + f.get('message', f.get('rule_id',''))[:80] for f in fp_list)}",
+            f"**{len(fp_list)}** tanesi false positive olarak filtrelendi (güven eşiği: %65).",
+            *fp_messages,
             "",
         ]
 
+    # ── Caution ──
     if high:
         lines += [
             "> [!CAUTION]",
-            f"> Bu PR'da **{high} yuksek oncelikli guvenlik acigi** var. "
-            "Merge etmeden once duzeltilmesi onerilir.",
+            f"> Bu PR'da **{high} yüksek öncelikli güvenlik açığı** var. "
+            "Merge etmeden önce düzeltilmesi önerilir.",
             "",
         ]
 
-    # Dosya bazında grupla
-    by_file = {}
+    # ── Bulgular (dosya bazında) ──
+    by_file: dict[str, list] = {}
     for f in findings:
         by_file.setdefault(f.get("file") or "bilinmeyen", []).append(f)
 
     sev_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
     for fname, flist in sorted(by_file.items()):
         lines += [f"### 📄 `{fname}`", ""]
-        for f in sorted(flist, key=lambda x: sev_order.get(x.get("severity",""), 4)):
-            icon  = _ICON.get(f.get("severity",""), "⚪")
-            cwe   = f.get("cwe_id","")
-            owasp = f.get("owasp_category","")
-            conf  = "%95"
+        for f in sorted(flist, key=lambda x: sev_order.get(x.get("severity", ""), 4)):
+            icon  = _ICON.get(f.get("severity", ""), "⚪")
+            cwe   = f.get("cwe_id", "")
+            owasp = f.get("owasp_category", "")
             meta  = f"`{f.get('file','')}:{f.get('line','')}`"
             if f.get("rule_id"): meta += f" · Kural: `{f['rule_id']}`"
-            if conf:   meta += f" · guven: {conf}"
-            if cwe:    meta += f" · `{cwe}`"
-            if owasp:  meta += f" · `{owasp}`"
+            if cwe:   meta += f" · `{cwe}`"
+            if owasp: meta += f" · `{owasp}`"
+
             lines += [
                 f"{icon} **{f.get('severity','')}** — {f.get('message','')}",
                 f"  {meta}",
-                "",
             ]
+
+            # Düzeltme önerisi
+            fix = f.get("fix_suggestion", "")
+            if fix:
+                lines.append(f"  > 💡 **Düzeltme:** {fix}")
+
+            lines.append("")
+
+    # ── Yeni eklenen bulgular özeti (baseline'da yoktu) ──
+    if diff and diff.get("added"):
+        lines += ["### 🆕 Bu PR ile Eklenen Yeni Sorunlar", ""]
+        for f in diff["added"][:5]:
+            icon = _ICON.get(f.get("severity", ""), "⚪")
+            lines.append(
+                f"- {icon} `{f.get('file','')}:{f.get('line','')}` — "
+                f"{f.get('message','')[:80]}"
+            )
+        if len(diff["added"]) > 5:
+            lines.append(f"- _...ve {len(diff['added']) - 5} tane daha_")
+        lines.append("")
+
+    # ── Düzeltilen bulgular özeti ──
+    if diff and diff.get("fixed"):
+        lines += ["### ✅ Bu PR ile Düzeltilen Sorunlar", ""]
+        for f in diff["fixed"][:5]:
+            lines.append(
+                f"- ~~`{f.get('file','')}` — {f.get('message','')[:60]}~~"
+            )
+        lines.append("")
 
     lines += [
         "---",
         "_Bu analiz [DevSecOps AI](https://github.com/efsanees/devsecops) "
-        "tarafindan otomatik olarak yapilmistir._",
+        "tarafından otomatik olarak yapılmıştır._",
     ]
     return "\n".join(lines)
 
@@ -238,16 +431,15 @@ def main():
         return
 
     if not py_files:
-        body = (
+        post_comment(
             "## 🔍 DevSecOps Code Review\n\n"
-            f"{len(all_files)} dosya tarandiyor — Python dosyasi degismedi, "
-            "SAST analizi atlandiyor."
+            f"{len(all_files)} dosya tarandı — Python dosyası değişmedi, "
+            "SAST analizi atlanıyor."
         )
-        post_comment(body)
         return
 
-    # Dosyaları geçici dizine indir
-    with tempfile.TemporaryDirectory(prefix="pr_review_") as tmp:
+    # HEAD dosyaları indir ve tara
+    with tempfile.TemporaryDirectory(prefix="pr_head_") as tmp:
         downloaded = 0
         for path in py_files:
             content = get_file_content(path, HEAD_SHA)
@@ -267,12 +459,18 @@ def main():
     # CWE / OWASP zenginleştir
     findings_enriched = [enrich(f) for f in findings_raw]
 
-    # False Positive filtresi
+    # 1. False Positive filtresi
     genuine, fp_list = fp_filter(findings_enriched)
     print(f"FP filtresi: {len(fp_list)} false positive ayiklandi")
 
+    # 2. AI Düzeltme önerileri (genuine HIGH/CRITICAL bulgulara)
+    add_fix_suggestions(genuine)
+
+    # 3. Baseline karşılaştırma
+    diff = compute_baseline_diff(py_files, genuine)
+
     # Yorum oluştur ve gönder
-    body = build_comment(genuine, fp_list, len(all_files))
+    body = build_comment(genuine, fp_list, len(all_files), diff)
     ok = post_comment(body)
     print("Comment gonderildi." if ok else "Comment gonderilemedi!")
 
