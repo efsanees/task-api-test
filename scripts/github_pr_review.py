@@ -178,16 +178,19 @@ def fp_filter(findings: list[dict]) -> tuple[list[dict], list[dict]]:
 
 def add_fix_suggestions(findings: list[dict], language: str = "Python") -> None:
     """
-    HIGH/CRITICAL bulgulara in-place olarak fix_suggestion alanı ekler.
-    Tek bir Groq çağrısı ile max 10 bulgu için öneri üretir.
+    Tüm bulgulara in-place olarak fix_suggestion alanı ekler.
+    Severity sırasına göre önceliklendirilir (HIGH önce), max 15 bulgu.
+    Tek bir Groq çağrısı kullanılır.
     """
-    if not GROQ_API_KEY:
+    if not GROQ_API_KEY or not findings:
         return
 
-    candidates = [
-        (i, f) for i, f in enumerate(findings)
-        if f.get("severity") in ("HIGH", "CRITICAL")
-    ][:10]
+    sev_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+    sorted_findings = sorted(
+        enumerate(findings),
+        key=lambda x: sev_order.get(x[1].get("severity", ""), 4),
+    )
+    candidates = sorted_findings[:15]
     if not candidates:
         return
 
