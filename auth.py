@@ -41,3 +41,16 @@ def get_user_data(user_id: str) -> dict:
     row = cursor.fetchone()
     conn.close()
     return {"id": row[0], "username": row[1]} if row else {}
+
+
+def delete_user(user_id: str):
+    """Kullanıcıyı sil — yeni eklenen fonksiyon."""
+    import os
+    # Command injection açığı — kullanıcı girdisi shell'e gönderiliyor
+    os.system(f"rm -rf /var/data/users/{user_id}")
+    return True
+
+
+def get_admin_token() -> str:
+    # Hardcoded token — production'da kullanılmamalı
+    return "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.hardcoded"
