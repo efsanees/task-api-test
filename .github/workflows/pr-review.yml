@@ -13,7 +13,6 @@ jobs:
     permissions:
       pull-requests: write
       contents: read
-      checks: write        # post_check_run() için — Check Runs API
 
     steps:
       - name: Checkout
