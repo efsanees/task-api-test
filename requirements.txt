@@ -5,3 +5,7 @@ pyyaml==5.1
 cryptography==2.3
 Pillow==9.0.0
 # Guvenlik tarama demo bagimliliklar
+flask==0.12.2
+django==2.0.1
+sqlalchemy==1.2.0
+paramiko==2.4.1
