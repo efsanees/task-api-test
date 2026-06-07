@@ -53,6 +53,37 @@ def post_comment(body):
     resp = requests.post(url, headers=HEADERS, json={"body": body}, timeout=15)
     return resp.status_code == 201
 
+
+def post_check_run(conclusion: str, title: str, summary: str) -> None:
+    """
+    GitHub Check Run oluşturur — PR check panel'inde check adının yanında
+    özel bir mesaj gösterir (ör: 'Security Gate: 3 HIGH/CRITICAL bulgu — merge edilemez').
+
+    conclusion: 'success' | 'failure'
+    title:      Check panel'inde görünen kısa başlık (max ~72 karakter)
+    summary:    Check detay sayfasında görünen açıklama
+    """
+    if not HEAD_SHA or not REPO:
+        print("[CheckRun] HEAD_SHA veya REPO eksik, atlanıyor.")
+        return
+
+    url = f"{GH_API}/repos/{REPO}/check-runs"
+    payload = {
+        "name":       "Security Gate",
+        "head_sha":   HEAD_SHA,
+        "status":     "completed",
+        "conclusion": conclusion,
+        "output": {
+            "title":   title,
+            "summary": summary,
+        },
+    }
+    resp = requests.post(url, headers=HEADERS, json=payload, timeout=15)
+    if resp.status_code in (200, 201):
+        print(f"[CheckRun] Oluşturuldu: {conclusion} — {title}")
+    else:
+        print(f"[CheckRun] Hata {resp.status_code}: {resp.text[:200]}")
+
 # ── SAST: Bandit ──────────────────────────────────────────────────────────────
 
 def run_bandit(tmp_dir: str) -> list[dict]:
@@ -877,6 +908,39 @@ def main():
     body = build_comment(genuine, fp_list, len(all_files), diff, sca_findings, packages_checked)
     ok = post_comment(body)
     print("Comment gonderildi." if ok else "Comment gonderilemedi!")
+
+    # ── Bloklama kararı ──────────────────────────────────────────────────────
+    high_sast = [f for f in genuine if f.get("severity") in ("HIGH", "CRITICAL")]
+    high_sca  = [f for f in sca_findings if f.get("severity") in ("HIGH", "CRITICAL")]
+    total_high = len(high_sast) + len(high_sca)
+
+    if total_high > 0:
+        # Kısa başlık — PR check panel'inde görünür
+        parts = []
+        if high_sast:
+            parts.append(f"{len(high_sast)} SAST")
+        if high_sca:
+            parts.append(f"{len(high_sca)} SCA")
+        detail = " + ".join(parts)
+        check_title   = f"Security Gate: {total_high} HIGH/CRITICAL bulgu ({detail}) — merge edilemez"
+        check_summary = (
+            f"**{total_high} yüksek/kritik güvenlik açığı** tespit edildi.\n\n"
+            f"- SAST (kod): {len(high_sast)} HIGH/CRITICAL bulgu\n"
+            f"- SCA (bağımlılık): {len(high_sca)} HIGH/CRITICAL CVE\n\n"
+            "Güvenlik açıkları giderilmeden bu PR main branch'e merge edilemez."
+        )
+        post_check_run("failure", check_title, check_summary)
+        print(f"\n❌ MERGE ENGELLENDI: {check_title}")
+        import sys
+        sys.exit(1)
+    else:
+        post_check_run(
+            "success",
+            "Security Gate: Güvenlik kontrolü geçti ✅",
+            "HIGH veya CRITICAL seviyede güvenlik açığı bulunamadı. Merge güvenli.",
+        )
+        print("\n✅ Güvenlik kontrolü geçti — merge için engel yok.")
+
 
 if __name__ == "__main__":
     main()
