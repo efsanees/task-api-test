@@ -54,6 +54,32 @@ def post_comment(body):
     return resp.status_code == 201
 
 
+def post_check_run(conclusion: str, title: str, summary: str) -> None:
+    """
+    GitHub Check Runs API ile 'Security Gate' adında bir check oluşturur.
+    PR check panel'inde check adının yanında özel mesaj gösterir.
+    Ruleset'te 'Security Gate' required olarak tanımlanmalıdır.
+
+    conclusion : 'failure' | 'success'
+    title      : Check adının yanında görünen kısa mesaj
+    summary    : Check detay sayfasında görünen açıklama
+    """
+    if not HEAD_SHA or not REPO:
+        print("[CheckRun] HEAD_SHA/REPO eksik, atlanıyor.")
+        return
+    payload = {
+        "name":       "Security Gate",
+        "head_sha":   HEAD_SHA,
+        "status":     "completed",
+        "conclusion": conclusion,
+        "output": {"title": title, "summary": summary},
+    }
+    resp = requests.post(
+        f"{GH_API}/repos/{REPO}/check-runs",
+        headers=HEADERS, json=payload, timeout=15,
+    )
+    ok = resp.status_code in (200, 201)
+    print(f"[CheckRun] {'OK' if ok else 'HATA ' + str(resp.status_code)}: {conclusion} — {title}")
 
 # ── SAST: Bandit ──────────────────────────────────────────────────────────────
 
@@ -881,24 +907,30 @@ def main():
     print("Comment gonderildi." if ok else "Comment gonderilemedi!")
 
     # ── Bloklama kararı ──────────────────────────────────────────────────────
-    high_sast = [f for f in genuine if f.get("severity") in ("HIGH", "CRITICAL")]
-    high_sca  = [f for f in sca_findings if f.get("severity") in ("HIGH", "CRITICAL")]
+    high_sast  = [f for f in genuine    if f.get("severity") in ("HIGH", "CRITICAL")]
+    high_sca   = [f for f in sca_findings if f.get("severity") in ("HIGH", "CRITICAL")]
     total_high = len(high_sast) + len(high_sca)
 
     if total_high > 0:
         parts = []
-        if high_sast:
-            parts.append(f"{len(high_sast)} SAST")
-        if high_sca:
-            parts.append(f"{len(high_sca)} SCA")
+        if high_sast: parts.append(f"{len(high_sast)} SAST")
+        if high_sca:  parts.append(f"{len(high_sca)} SCA")
         detail = " + ".join(parts)
-        msg = f"Security Gate: {total_high} HIGH/CRITICAL bulgu ({detail}) — merge edilemez"
-        # GitHub Actions annotation — check detay sayfasında görünür
-        print(f"::error title=Security Gate::{msg}")
-        print(f"\n❌ MERGE ENGELLENDI: {msg}")
-        import sys
-        sys.exit(1)
+        title   = f"Security Gate: {total_high} HIGH/CRITICAL bulgu ({detail}) — merge edilemez"
+        summary = (
+            f"**{total_high} yüksek/kritik güvenlik açığı** tespit edildi.\n\n"
+            f"- Kod (SAST): {len(high_sast)} bulgu\n"
+            f"- Bağımlılık (SCA): {len(high_sca)} CVE\n\n"
+            "Güvenlik açıkları giderilmeden merge yapılamaz."
+        )
+        post_check_run("failure", title, summary)
+        print(f"\n❌ MERGE ENGELLENDI: {title}")
     else:
+        post_check_run(
+            "success",
+            "Security Gate: Güvenlik kontrolü geçti",
+            "HIGH/CRITICAL seviyede güvenlik açığı bulunamadı. Merge güvenli.",
+        )
         print("\n✅ Güvenlik kontrolü geçti — merge için engel yok.")
 
 

@@ -13,6 +13,7 @@ jobs:
     permissions:
       pull-requests: write
       contents: read
+      checks: write        # post_check_run() — Checks API için gerekli
 
     steps:
       - name: Checkout
