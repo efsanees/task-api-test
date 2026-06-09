@@ -54,3 +54,21 @@ def delete_user(user_id: str):
 def get_admin_token() -> str:
     # Hardcoded token — production'da kullanılmamalı
     return "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.hardcoded"
+
+
+# --- Yeni eklenen özellikler (test/security-gate-v2) ---
+import pickle
+import yaml
+import os
+
+def load_user_session(data: bytes) -> dict:
+    # Güvensiz deserialization — arbitrary code execution riski (CWE-502)
+    return pickle.loads(data)
+
+def parse_config(config_str: str) -> dict:
+    # yaml.load Loader belirtilmeden — güvensiz (CWE-20)
+    return yaml.load(config_str)
+
+def export_user_data(username: str) -> None:
+    # os.system ile command injection (CWE-78)
+    os.system(f"tar -czf /tmp/{username}.tar.gz /var/data/{username}")
