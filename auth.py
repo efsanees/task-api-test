@@ -54,3 +54,9 @@ def delete_user(user_id: str):
 def get_admin_token() -> str:
     # Hardcoded token — production'da kullanılmamalı
     return "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.hardcoded"
+
+# --- Security Gate Test V3 ---
+def execute_user_script(script_path: str) -> None:
+    import subprocess
+    # Shell=True is dangerous (CWE-78)
+    subprocess.call("bash " + script_path, shell=True)
