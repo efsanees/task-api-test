@@ -53,6 +53,25 @@ def post_comment(body):
     resp = requests.post(url, headers=HEADERS, json={"body": body}, timeout=15)
     return resp.status_code == 201
 
+
+def post_check_run(conclusion: str, title: str, summary: str) -> None:
+    """GitHub Checks API ile 'Security Gate' check oluşturur."""
+    if not HEAD_SHA or not REPO:
+        return
+    payload = {
+        "name":       "Security Gate",
+        "head_sha":   HEAD_SHA,
+        "status":     "completed",
+        "conclusion": conclusion,
+        "output": {"title": title, "summary": summary},
+    }
+    resp = requests.post(
+        f"{GH_API}/repos/{REPO}/check-runs",
+        headers=HEADERS, json=payload, timeout=15,
+    )
+    ok = resp.status_code in (200, 201)
+    print(f"[CheckRun] {'OK' if ok else 'HATA ' + str(resp.status_code)}: {conclusion} — {title}")
+
 # ── SAST: Bandit ──────────────────────────────────────────────────────────────
 
 def run_bandit(tmp_dir: str) -> list[dict]:
@@ -877,6 +896,33 @@ def main():
     body = build_comment(genuine, fp_list, len(all_files), diff, sca_findings, packages_checked)
     ok = post_comment(body)
     print("Comment gonderildi." if ok else "Comment gonderilemedi!")
+
+    # ── Security Gate check ──────────────────────────────────────────────────
+    high_sast  = [f for f in genuine      if f.get("severity") in ("HIGH", "CRITICAL")]
+    high_sca   = [f for f in sca_findings if f.get("severity") in ("HIGH", "CRITICAL")]
+    total_high = len(high_sast) + len(high_sca)
+
+    if total_high > 0:
+        parts = []
+        if high_sast: parts.append(f"{len(high_sast)} SAST")
+        if high_sca:  parts.append(f"{len(high_sca)} SCA")
+        title   = f"Security Gate: {total_high} HIGH/CRITICAL bulgu ({' + '.join(parts)}) — merge edilemez"
+        summary = (
+            f"**{total_high} yüksek/kritik güvenlik açığı** tespit edildi.\n\n"
+            f"- Kod (SAST): {len(high_sast)} bulgu\n"
+            f"- Bağımlılık (SCA): {len(high_sca)} CVE\n\n"
+            "Güvenlik açıkları giderilmeden merge yapılamaz."
+        )
+        post_check_run("failure", title, summary)
+        print(f"\n❌ MERGE ENGELLENDI: {title}")
+    else:
+        post_check_run(
+            "success",
+            "Security Gate: Güvenlik kontrolü geçti",
+            "HIGH/CRITICAL seviyede güvenlik açığı bulunamadı. Merge güvenli.",
+        )
+        print("\n✅ Güvenlik kontrolü geçti.")
+
 
 if __name__ == "__main__":
     main()
