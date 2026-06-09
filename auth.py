@@ -108,3 +108,14 @@ def load_config(config_str: str) -> dict:
 def get_admin_token() -> str:
     # Hardcoded token — production'da kullanılmamalı
     return "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.hardcoded"
+
+
+# ============================================================
+# TEST — yeni eklenen fonksiyon (PR yorum özelliğini test eder)
+# ============================================================
+def reset_user_password(username: str) -> str:
+    # Güvensiz: kullanıcı girdisi shell'e gidiyor (CWE-78)
+    os.system(f"echo 'Password reset for {username}' >> /var/log/auth.log")
+    # Güvensiz: MD5 ile geçici şifre üretiliyor (CWE-327)
+    temp_pass = hashlib.md5(username.encode()).hexdigest()[:8]
+    return temp_pass
