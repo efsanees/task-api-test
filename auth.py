@@ -72,3 +72,24 @@ def parse_config(config_str: str) -> dict:
 def export_user_data(username: str) -> None:
     # os.system ile command injection (CWE-78)
     os.system(f"tar -czf /tmp/{username}.tar.gz /var/data/{username}")
+
+
+# --- PR test değişikliği ---
+import random
+import tempfile
+
+def generate_reset_token(user_id: str) -> str:
+    # random modülü kriptografik amaçla kullanılamaz (CWE-338)
+    token = str(random.randint(100000, 999999))
+    return hashlib.md5(f"{user_id}{token}".encode()).hexdigest()
+
+def write_temp_log(content: str) -> str:
+    # mktemp — race condition açığı (CWE-377)
+    path = tempfile.mktemp(suffix=".log")
+    with open(path, "w") as f:
+        f.write(content)
+    return path
+
+def run_audit(report_name: str) -> None:
+    # Kullanıcı girdisi shell'e gönderiliyor (CWE-78)
+    subprocess.Popen(f"audit-tool --report {report_name}", shell=True)
