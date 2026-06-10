@@ -473,19 +473,6 @@ def build_comment(
 
             lines.append("")
 
-    # ── Yeni eklenen bulgular özeti (baseline'da yoktu) ──
-    if diff and diff.get("added"):
-        lines += ["### 🆕 Bu PR ile Eklenen Yeni Sorunlar", ""]
-        for f in diff["added"][:5]:
-            icon = _ICON.get(f.get("severity", ""), "⚪")
-            lines.append(
-                f"- {icon} `{f.get('file','')}:{f.get('line','')}` — "
-                f"{tr_message(f)[:80]}"
-            )
-        if len(diff["added"]) > 5:
-            lines.append(f"- _...ve {len(diff['added']) - 5} tane daha_")
-        lines.append("")
-
     # ── Düzeltilen bulgular özeti ──
     if diff and diff.get("fixed"):
         lines += ["### ✅ Bu PR ile Düzeltilen Sorunlar", ""]
@@ -563,6 +550,20 @@ def build_comment(
                     if remaining > 0:
                         lines.append(f"_...ve {remaining} paket daha_\n")
                     break
+
+    # ── Yeni eklenen bulgular özeti (baseline'da yoktu) — en son bölüm ──
+    # NOT: Bu bölüm kasıtlı olarak SCA'dan SONRA gösterilir.
+    if diff and diff.get("added"):
+        lines += ["", "### 🆕 Bu PR ile Eklenen Yeni Sorunlar", ""]
+        for f in diff["added"][:5]:
+            icon = _ICON.get(f.get("severity", ""), "⚪")
+            lines.append(
+                f"- {icon} `{f.get('file','')}:{f.get('line','')}` — "
+                f"{tr_message(f)[:80]}"
+            )
+        if len(diff["added"]) > 5:
+            lines.append(f"- _...ve {len(diff['added']) - 5} tane daha_")
+        lines.append("")
 
     lines += [
         "---",
@@ -719,23 +720,30 @@ _DEP_FILES = {
 
 def run_sca(all_filenames: list[str]) -> tuple[list[dict], int]:
     """
-    PR'da bulunan bağımlılık dosyalarını okur, OSV.dev ile CVE tarar.
+    Bağımlılık dosyalarını HEAD_SHA'dan okur, OSV.dev ile CVE tarar.
+    NOT: requirements.txt PR'da değişmemiş olsa bile her zaman taranır;
+         yalnızca PR diff'inde olmayan dosyalar atlanmamalıdır — bağımlılık
+         güvenliği kod değişikliğinden bağımsız değerlendirilmelidir.
     Döner: (findings, packages_checked)
     """
     findings: list[dict] = []
     packages_checked = 0
 
     for fname, (ecosystem, parser) in _DEP_FILES.items():
-        if fname not in all_filenames:
-            continue
+        # BUG FIX: Bağımlılık dosyaları PR diff'inde olmasa bile her zaman tara.
+        # Eski davranış: `if fname not in all_filenames: continue`
+        # Bu koşul requirements.txt değişmediğinde SCA'yı tamamen atlıyordu.
         content = get_file_content(fname, HEAD_SHA)
         if not content:
+            # Dosya repoda hiç yoksa atla (gerçekten yok)
+            print(f"SCA [{ecosystem}]: {fname} bulunamadı, atlanıyor.")
             continue
         packages = parser(content)
         packages_checked += len(packages)
         found = _query_osv(packages, ecosystem)
         findings.extend(found)
-        print(f"SCA [{ecosystem}]: {len(packages)} paket → {len(found)} CVE")
+        changed_marker = "(PR'da değişti)" if fname in all_filenames else "(değişmedi, yine de tarandı)"
+        print(f"SCA [{ecosystem}]: {len(packages)} paket → {len(found)} CVE {changed_marker}")
 
     sev_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
     findings.sort(key=lambda f: sev_order.get(f.get("severity", ""), 4))
