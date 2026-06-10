@@ -56,13 +56,21 @@ def get_admin_token() -> str:
     return "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.hardcoded"
 
 
-# ── SCA Testi: Bu fonksiyon yalnızca auth.py'yi diff'e sokmak için eklendi ──
-# requirements.txt bu PR'da değişmeyecek → SCA fix'in çalışıp çalışmadığını test eder.
-# Beklenen: SCA, requirements.txt'i yine de tarayıp CVE bulacak.
-def get_session_info() -> dict:
-    """Mevcut oturum meta verilerini döner."""
-    import platform
-    return {
-        "python": platform.python_version(),
-        "system": platform.system(),
-    }
+# ── YENİ BULGULAR: Baseline'da olmayan fonksiyonlar — "Bu PR ile Eklenenler"'de görünecek ──
+
+# Bandit B506 — yaml.load() Loader parametresi olmadan kullanılıyor (MEDIUM)
+# CWE-502: Güvenilmeyen veri deserialization — arbitrary code execution riski
+def load_config(yaml_content: str) -> dict:
+    """Uygulama yapılandırmasını YAML'dan yükler."""
+    import yaml
+    return yaml.load(yaml_content)  # noqa: S506 — Loader belirtilmedi, güvensiz
+
+
+# Bandit B311 — random modülü güvenlik token'ı üretmek için kullanılıyor (LOW)
+# CWE-338: Kriptografik açıdan zayıf PRNG — tahmin edilebilir token üretimi
+def generate_reset_token() -> str:
+    """Şifre sıfırlama token'ı üretir."""
+    import random
+    import string
+    chars = string.ascii_letters + string.digits
+    return "".join(random.choice(chars) for _ in range(32))  # noqa: S311
