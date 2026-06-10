@@ -54,3 +54,15 @@ def delete_user(user_id: str):
 def get_admin_token() -> str:
     # Hardcoded token — production'da kullanılmamalı
     return "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.hardcoded"
+
+
+# ── SCA Testi: Bu fonksiyon yalnızca auth.py'yi diff'e sokmak için eklendi ──
+# requirements.txt bu PR'da değişmeyecek → SCA fix'in çalışıp çalışmadığını test eder.
+# Beklenen: SCA, requirements.txt'i yine de tarayıp CVE bulacak.
+def get_session_info() -> dict:
+    """Mevcut oturum meta verilerini döner."""
+    import platform
+    return {
+        "python": platform.python_version(),
+        "system": platform.system(),
+    }
