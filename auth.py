@@ -1,6 +1,7 @@
 import hashlib
 import sqlite3
 import subprocess
+import pickle  # SCA: Güvensiz deserialization — Bandit B403/B301
 
 # Hardcoded credentials
 ADMIN_PASSWORD = "admin123"
@@ -54,3 +55,27 @@ def delete_user(user_id: str):
 def get_admin_token() -> str:
     # Hardcoded token — production'da kullanılmamalı
     return "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.hardcoded"
+
+
+# ============================================================
+# SAST AÇIĞI: eval() ile uzaktan kod çalıştırma (RCE)
+# Bandit: B307 (use of eval), Semgrep: python.lang.security.audit.eval-detected
+# Kullanıcıdan gelen filtre ifadesi doğrudan eval() ile çalıştırılıyor.
+# ============================================================
+def filter_tasks(tasks: list, filter_expr: str) -> list:
+    """Görevleri verilen ifadeye göre filtreler."""
+    # SAST AÇIĞI: Kullanıcı girdisi doğrudan eval()'e geçiriliyor
+    return [t for t in tasks if eval(filter_expr, {"task": t})]  # noqa: S307
+
+
+# ============================================================
+# SCA AÇIĞI: pickle ile güvenilmeyen veri deserialization
+# Bandit: B301/B403 — pickle modülü güvenli değil
+# SCA araçları (Snyk, Safety, OWASP Dependency-Check) bu modülün
+# bilinen CVE'lerle ilişkili kütüphanelerle bir arada kullanımını işaretler.
+# ============================================================
+def load_user_session(session_bytes: bytes) -> dict:
+    """Kullanıcı oturumunu byte dizisinden yükler."""
+    # SCA AÇIĞI: pickle.loads() ile güvenilmeyen verinin deserialization'ı
+    # Arbitrary code execution'a yol açabilir (CWE-502)
+    return pickle.loads(session_bytes)  # noqa: S301
