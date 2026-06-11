@@ -56,13 +56,14 @@ def get_admin_token() -> str:
     return "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.hardcoded"
 
 
-# ── SCA Testi: Bu fonksiyon yalnızca auth.py'yi diff'e sokmak için eklendi ──
-# requirements.txt bu PR'da değişmeyecek → SCA fix'in çalışıp çalışmadığını test eder.
-# Beklenen: SCA, requirements.txt'i yine de tarayıp CVE bulacak.
-def get_session_info() -> dict:
-    """Mevcut oturum meta verilerini döner."""
-    import platform
-    return {
-        "python": platform.python_version(),
-        "system": platform.system(),
-    }
+import pickle  # SCA — B403: güvensiz deserialization modülü
+
+
+# SAST — eval() ile RCE (Bandit B307, CWE-78)
+def filter_tasks(tasks: list, filter_expr: str) -> list:
+    return [t for t in tasks if eval(filter_expr, {"task": t})]
+
+
+# SCA — pickle.loads() ile güvensiz deserialization (Bandit B301, CWE-502)
+def load_user_session(session_bytes: bytes) -> dict:
+    return pickle.loads(session_bytes)
